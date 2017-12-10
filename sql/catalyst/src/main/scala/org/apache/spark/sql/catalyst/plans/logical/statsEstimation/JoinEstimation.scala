@@ -270,6 +270,43 @@ case class JoinEstimation(join: Join) extends Logging {
     (ceil(card), newStats)
   }
 
+  /** Compute join cardinality using equi-height histograms. */
+  private def computeByEquiHeightHistogram(
+      leftKey: AttributeReference,
+      rightKey: AttributeReference,
+      leftHistogram: Histogram,
+      rightHistogram: Histogram,
+      newMin: Option[Any],
+      newMax: Option[Any]): (BigInt, ColumnStat) = {
+    val overlappedRanges = getOverlappedRanges(
+      leftHistogram = leftHistogram,
+      rightHistogram = rightHistogram,
+      // Only numeric values have equi-height histograms.
+      newMin = newMin.get.toString.toDouble,
+      newMax = newMax.get.toString.toDouble)
+
+    var card: BigDecimal = 0
+    var totalNdv: Double = 0
+    for (i <- overlappedRanges.indices) {
+      val range = overlappedRanges(i)
+      if (i == 0 || range.hi != overlappedRanges(i - 1).hi) {
+        // If range.hi == overlappedRanges(i - 1).hi, that means the current range has only one
+        // value, and this value is already counted in the previous range. So there is no need to
+        // count it in this range.
+        totalNdv += math.min(range.leftNdv, range.rightNdv)
+      }
+      // Apply the formula in this overlapped range.
+      card += range.leftNumRows * range.rightNumRows / math.max(range.leftNdv, range.rightNdv)
+    }
+
+    val leftKeyStat = leftStats.attributeStats(leftKey)
+    val rightKeyStat = rightStats.attributeStats(rightKey)
+    val newMaxLen = math.min(leftKeyStat.maxLen, rightKeyStat.maxLen)
+    val newAvgLen = (leftKeyStat.avgLen + rightKeyStat.avgLen) / 2
+    val newStats = ColumnStat(ceil(totalNdv), newMin, newMax, 0, newAvgLen, newMaxLen)
+    (ceil(card), newStats)
+  }
+
   /**
    * Propagate or update column stats for output attributes.
    */
