@@ -291,7 +291,7 @@ object EstimationUtils {
     }
     i
   }
-  +
+
   /**
     * Returns the number of the last bin into which a column value falls for a specified
     * numeric equi-height histogram.
