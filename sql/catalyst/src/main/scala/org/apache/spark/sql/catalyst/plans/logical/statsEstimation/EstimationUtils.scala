@@ -277,6 +277,146 @@ object EstimationUtils {
   }
 
   /**
+    * Returns the number of the first bin into which a column value falls for a specified
+    * numeric equi-height histogram.
+    *
+    * @param value a literal value of a column
+    * @param bins an array of bins for a given numeric equi-height histogram
+    * @return the id of the first bin into which a column value falls.
+    */
+  def findFirstBinForValue(value: Double, bins: Array[HistogramBin]): Int = {
+    var i = 0
+    while ((i < bins.length) && (value > bins(i).hi)) {
+      i += 1
+    }
+    i
+  }
+  +
+  /**
+    * Returns the number of the last bin into which a column value falls for a specified
+    * numeric equi-height histogram.
+    *
+    * @param value a literal value of a column
+    * @param bins an array of bins for a given numeric equi-height histogram
+    * @return the id of the last bin into which a column value falls.
+    */
+  def findLastBinForValue(value: Double, bins: Array[HistogramBin]): Int = {
+    var i = bins.length - 1
+    while ((i >= 0) && (value < bins(i).lo)) {
+      i -= 1
+    }
+    i
+  }
+
+  /**
+    * Returns a percentage of a bin holding values for column value in the range of
+    * [lowerValue, higherValue]
+    *
+    * @param higherValue a given upper bound value of a specified column value range
+    * @param lowerValue a given lower bound value of a specified column value range
+    * @param bin a single histogram bin
+    * @return the percentage of a single bin holding values in [lowerValue, higherValue].
+    */
+  private def getOccupation(
+                             higherValue: Double,
+                             lowerValue: Double,
+                             bin: HistogramBin): Double = {
+    assert(bin.lo <= lowerValue && lowerValue <= higherValue && higherValue <= bin.hi)
+    if (bin.hi == bin.lo) {
+      // the entire bin is covered in the range
+      1.0
+    } else if (higherValue == lowerValue) {
+      // set percentage to 1/NDV
+      1.0 / bin.ndv.toDouble
+    } else {
+      // Use proration since the range falls inside this bin.
+      math.min((higherValue - lowerValue) / (bin.hi - bin.lo), 1.0)
+    }
+  }
+
+  /**
+    * Returns the number of bins for column values in [lowerValue, higherValue].
+    * This is an overloaded method. The column value distribution is saved in an
+    * equi-height histogram.
+    *
+    * @param higherId id of the high end bin holding the high end value of a column range
+    * @param lowerId id of the low end bin holding the low end value of a column range
+    * @param higherEnd a given upper bound value of a specified column value range
+    * @param lowerEnd a given lower bound value of a specified column value range
+    * @param histogram a numeric equi-height histogram
+    * @return the number of bins for column values in [lowerEnd, higherEnd].
+    */
+  def getOccupationBins(
+                         higherId: Int,
+                         lowerId: Int,
+                         higherEnd: Double,
+                         lowerEnd: Double,
+                         histogram: Histogram): Double = {
+    if (lowerId == higherId) {
+      val curBin = histogram.bins(lowerId)
+      getOccupation(higherEnd, lowerEnd, curBin)
+    } else {
+      // compute how much lowerEnd/higherEnd occupies its bin
+      val lowerCurBin = histogram.bins(lowerId)
+      val lowerPart = getOccupation(lowerCurBin.hi, lowerEnd, lowerCurBin)
+
+      val higherCurBin = histogram.bins(higherId)
+      val higherPart = getOccupation(higherEnd, higherCurBin.lo, higherCurBin)
+
+      // the total length is lowerPart + higherPart + bins between them
+      lowerPart + higherPart + higherId - lowerId - 1
+    }
+  }
+
+  /**
+    * Returns the number of distinct values, ndv, for column values in [lowerEnd, higherEnd].
+    * The column value distribution is saved in an equi-height histogram.
+    *
+    * @param higherId id of the high end bin holding the high end value of a column range
+    * @param lowerId id of the low end bin holding the low end value of a column range
+    * @param higherEnd a given upper bound value of a specified column value range
+    * @param lowerEnd a given lower bound value of a specified column value range
+    * @param histogram a numeric equi-height histogram
+    * @return the number of distinct values, ndv, for column values in [lowerEnd, higherEnd].
+    */
+  def getOccupationNdv(
+                        higherId: Int,
+                        lowerId: Int,
+                        higherEnd: Double,
+                        lowerEnd: Double,
+                        histogram: Histogram)
+  : Long = {
+    val ndv: Double = if (higherEnd == lowerEnd) {
+      1
+    } else if (lowerId == higherId) {
+      val curBin = histogram.bins(lowerId)
+      getOccupation(higherEnd, lowerEnd, curBin) * curBin.ndv
+    } else {
+      // compute how much the [lowerEnd, higherEnd] range occupies the bins in a histogram.
+      // Our computation has 3 parts: the smallest/min bin, the middle bins, the largest/max bin.
+      val minCurBin = histogram.bins(lowerId)
+      val minPartNdv = getOccupation(minCurBin.hi, lowerEnd, minCurBin) * minCurBin.ndv
+
+      val maxCurBin = histogram.bins(higherId)
+      val maxPartNdv = getOccupation(higherEnd, maxCurBin.lo, maxCurBin) * maxCurBin.ndv
+
+      // The total ndv is minPartNdv + maxPartNdv + Ndvs between them.
+      // In order to avoid counting same distinct value twice, we check if the upperBound value
+      // of next bin is equal to the hi value of the previous bin.  We bump up
+      // ndv value only if the hi values of two consecutive bins are different.
+      var middleNdv: Long = 0
+      for (i <- histogram.bins.indices) {
+        val bin = histogram.bins(i)
+        if (bin.hi != bin.lo && i >= lowerId + 1 && i <= higherId - 1) {
+          middleNdv += bin.ndv
+        }
+      }
+      minPartNdv + maxPartNdv + middleNdv
+    }
+    math.round(ndv)
+  }
+
+  /**
    * A join between two equi-height histograms may produce multiple overlapped ranges.
    * Each overlapped range is produced by a part of one bin in the left histogram and a part of
    * one bin in the right histogram.
